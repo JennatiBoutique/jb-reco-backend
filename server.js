@@ -1,4 +1,4 @@
-// server.js
+// server.js (patched — supports Headless private token + debug endpoint)
 import express from "express";
 import cors from "cors";
 
@@ -6,23 +6,29 @@ const app = express();
 app.use(cors());
 
 const SHOP_DOMAIN = process.env.SHOP_DOMAIN;            // e.g., jennatiboutique.com
-const STOREFRONT_TOKEN = process.env.STOREFRONT_TOKEN;  // Storefront API token
-const CURRENCY_SYMBOL = "€";                            // adjust if needed
+const STOREFRONT_TOKEN = process.env.STOREFRONT_TOKEN;  // Storefront API token (Headless private or Storefront access)
+const CURRENCY_SYMBOL = "€";
 
 if(!SHOP_DOMAIN || !STOREFRONT_TOKEN){
   console.warn("Missing SHOP_DOMAIN or STOREFRONT_TOKEN env vars.");
 }
 
-// Helper: GraphQL fetch to Storefront API (Node 18+ has global fetch)
+// GraphQL fetch to Storefront API (Node 18+ has global fetch)
 const GQL = async (query, variables = {}) => {
   const r = await fetch(`https://${SHOP_DOMAIN}/api/2024-07/graphql.json`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shopify-Storefront-Access-Token": STOREFRONT_TOKEN
+      // Send BOTH headers (public + private). Shopify ignores the unused one.
+      "X-Shopify-Storefront-Access-Token": STOREFRONT_TOKEN,
+      "Shopify-Storefront-Private-Token": STOREFRONT_TOKEN
     },
     body: JSON.stringify({ query, variables })
   });
+  if(!r.ok){
+    const body = await r.text();
+    throw new Error(`Storefront API HTTP ${r.status}: ${body}`);
+  }
   const j = await r.json();
   if (j.errors) {
     throw new Error(JSON.stringify(j.errors));
@@ -36,7 +42,7 @@ const norm = (s) => (s || "").toLowerCase().normalize("NFD").replace(/\p{Diacrit
 function extractNotes(htmlOrText){
   const text = (htmlOrText || "").replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim();
   const grab = (label) => {
-    const m = text.match(new RegExp(`${label}\\s*:\\s*([^\\.\\n]+)`, "i"));
+    const m = text.match(new RegExp(`${label}\s*:\s*([^\.\n]+)`, "i"));
     return m ? m[1].split(/,|;|\/|·|•/).map(x=>x.trim()).filter(Boolean) : [];
   };
   return {
@@ -55,19 +61,19 @@ function priceBand(amount){
 
 function scoreProduct(p, a){
   let s = 0;
-  // Gender
+  // Gender match
   if(a.gender){
     if(a.gender === 'Mixte' && p.gender === 'unisex') s+=2;
     if(a.gender === 'Femme' && p.gender === 'femme') s+=2;
     if(a.gender === 'Homme' && p.gender === 'homme') s+=2;
   }
-  // Olfactive profile (profile/notes/tags via text)
+  // Profile via text
   const map = {'Floral':'floral','Fruité':'fruit','Gourmand':'gourmand','Boisé/Ambré':'bois|oud|ambr','Musqué':'musc','Frais/Agrumes':'frais|agrum|citron|bergamote','Épicé':'epic|poivr|safran|cardamome'};
   if(a.profile){
     const re = new RegExp(map[a.profile]||"", "i");
     if(re.test(p.profileText)) s+=3;
   }
-  // Intensity (heuristic via description/tags)
+  // Intensity (heuristics)
   if(a.intensity){
     if(a.intensity === 'Douce' && /doux|léger|subtil/i.test(p.profileText)) s+=1;
     if(a.intensity === 'Modérée' && /mod(é|e)r(é|e)/i.test(p.profileText)) s+=1;
@@ -82,14 +88,11 @@ function scoreProduct(p, a){
   }
   // Budget
   if(a.budget && p.price_band === ({ "<25€":"<25", "25–40€":"25-40", "40–60€":"40-60", "+60€":"+60" }[a.budget])) s+=2;
-
   // Format
   if(a.format && a.format.startsWith('Huile') && /huile|musc/i.test(p.profileText)) s+=2;
   if(a.format === 'Eau de parfum' && /eau de parfum|edp/i.test(p.profileText)) s+=1;
-
   // Sensitivity
   if(a.sensitivity === 'Oui' && /fort|intense|puissant/i.test(p.profileText)) s-=1;
-
   return s;
 }
 
@@ -102,7 +105,7 @@ async function loadCatalog(){
 
   const items = [];
   let cursor = null;
-  const query = `
+  const query = \`
     query AllProducts($cursor: String){
       products(first: 100, after: $cursor, query:"-status:ARCHIVED"){
         pageInfo{ hasNextPage }
@@ -116,7 +119,7 @@ async function loadCatalog(){
           }
         }
       }
-    }`;
+    }\`;
 
   while(true){
     const data = await GQL(query, { cursor });
@@ -125,7 +128,6 @@ async function loadCatalog(){
       const n = edge.node;
       const v = n.variants?.edges?.[0]?.node;
       const price = Number(v?.price?.amount || 0);
-      const currency = v?.price?.currencyCode || "EUR";
       const img = n.images?.edges?.[0]?.node?.url || `https://${SHOP_DOMAIN}/cdn/shop/products/${n.handle}.jpg`;
       const { notes_top, notes_heart, notes_base } = extractNotes(n.descriptionHtml);
       const profileBits = [
@@ -145,13 +147,8 @@ async function loadCatalog(){
         title: n.title,
         brand: n.vendor || "",
         gender,
-        family: "",
-        profile: [],
         notes_top, notes_heart, notes_base,
-        intensity: "",
-        occasion: [],
         price,
-        currency,
         price_band: priceBand(price),
         image: img,
         url: `https://${SHOP_DOMAIN}/products/${n.handle}`,
@@ -196,9 +193,19 @@ app.get("/apps/jb-reco", async (req,res) => {
     res.json({ items: scored });
   } catch(e){
     console.error(e);
-    res.status(500).json({ error: "server_error" });
+    res.status(500).json({ error: "server_error", detail: String(e) });
   }
 });
 
-app.get("/", (_,res)=>res.send("OK"));
+// Debug: check if products are visible to your token
+app.get("/debug", async (_req,res) => {
+  try{
+    const items = await loadCatalog();
+    res.json({ count: items.length, sample: items.slice(0,3).map(p=>({title:p.title, price:p.price, url:p.url})) });
+  } catch(e){
+    res.status(500).json({ error: "server_error", detail: String(e) });
+  }
+});
+
+app.get("/", (_req,res)=>res.send("OK"));
 app.listen(process.env.PORT || 3000);
