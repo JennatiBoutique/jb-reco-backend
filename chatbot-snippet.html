@@ -53,7 +53,7 @@
       });
     } else {
       body.innerHTML = 'Je prépare votre sélection…';
-      fetch('/apps/jb-reco?q='+encodeURIComponent(JSON.stringify(state.answers)))
+      fetch('https://jb-reco-backend.vercel.app/apps/jb-reco?q='+encodeURIComponent(JSON.stringify(state.answers)))
         .then(r=>r.json())
         .then(data=>{
           body.innerHTML = data.items.map(p=>`
