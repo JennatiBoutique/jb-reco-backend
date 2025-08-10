@@ -208,4 +208,5 @@ app.get("/debug", async (_req,res) => {
 });
 
 app.get("/", (_req,res)=>res.send("OK"));
-app.listen(process.env.PORT || 3000);
+export default app;
+
