@@ -1,0 +1,80 @@
+<!-- chatbot-snippet.html : à coller dans theme.liquid juste avant </body> -->
+<div id="jb-chatbot-root"></div>
+<script>
+(() => {
+  const css = `
+  #jb-bubble{position:fixed;right:18px;bottom:18px;border-radius:999px;padding:12px 16px;background:#111;color:#fff;cursor:pointer;z-index:99999;box-shadow:0 8px 24px rgba(0,0,0,.2)}
+  #jb-panel{position:fixed;right:18px;bottom:78px;width:360px;max-width:92vw;height:540px;max-height:78vh;background:#fff;border-radius:14px;box-shadow:0 20px 48px rgba(0,0,0,.22);display:none;flex-direction:column;overflow:hidden;z-index:99999}
+  #jb-head{padding:12px 14px;font-weight:700;border-bottom:1px solid #eee}
+  #jb-body{padding:12px;overflow:auto;font-size:14px;line-height:1.45}
+  .jb-q{margin:10px 0}
+  .jb-opt{display:inline-block;margin:6px 6px 0 0;padding:6px 10px;border-radius:999px;border:1px solid #ddd;cursor:pointer}
+  .jb-chip{background:#111;color:#fff;border-color:#111}
+  #jb-actions{padding:10px;border-top:1px solid #eee;display:flex;gap:8px;flex-wrap:wrap}
+  `;
+  const style = document.createElement('style'); style.innerHTML = css; document.head.appendChild(style);
+
+  const root = document.getElementById('jb-chatbot-root');
+  const bubble = document.createElement('button');
+  bubble.id = 'jb-bubble'; bubble.innerText = 'Conseiller Parfum';
+  const panel = document.createElement('div'); panel.id = 'jb-panel';
+  panel.innerHTML = `
+    <div id="jb-head">Votre conseiller Parfums de Dubaï</div>
+    <div id="jb-body"></div>
+    <div id="jb-actions"></div>
+  `;
+  root.appendChild(bubble); root.appendChild(panel);
+
+  const state = { step: 0, answers: {} };
+  const steps = [
+    { key:'gender',      label:'Pour qui cherchez-vous un parfum ?', opts:['Femme','Homme','Mixte'] },
+    { key:'occasion',    label:'Quelle occasion ?', opts:['Tous les jours','Soirée','Mariage/évènement','Cadeau'] },
+    { key:'profile',     label:'Quel style préférez-vous ?', opts:['Floral','Fruité','Gourmand','Boisé/Ambré','Musqué','Frais/Agrumes','Épicé'] },
+    { key:'intensity',   label:'Intensité souhaitée ?', opts:['Douce','Modérée','Marquée'] },
+    { key:'sensitivity', label:'Sensible aux senteurs puissantes ?', opts:['Oui','Non'] },
+    { key:'season',      label:'Plutôt pour…', opts:['Toute l’année','Été','Hiver'] },
+    { key:'format',      label:'Format préféré ?', opts:['Eau de parfum','Huile/Musc','Brume','Peu importe'] },
+    { key:'budget',      label:'Budget ?', opts:['<25€','25–40€','40–60€','+60€'] }
+  ];
+
+  function renderStep(){
+    const body = document.querySelector('#jb-body');
+    const actions = document.querySelector('#jb-actions');
+    body.innerHTML = ''; actions.innerHTML = '';
+    if(state.step < steps.length){
+      const s = steps[state.step];
+      const q = document.createElement('div'); q.className='jb-q'; q.innerHTML = `<div style="font-weight:600">${s.label}</div>`;
+      body.appendChild(q);
+      s.opts.forEach(o=>{
+        const btn = document.createElement('button');
+        btn.className='jb-opt'; btn.innerText = o;
+        btn.onclick = ()=>{ state.answers[s.key]=o; state.step++; renderStep(); };
+        actions.appendChild(btn);
+      });
+    } else {
+      body.innerHTML = 'Je prépare votre sélection…';
+      fetch('/apps/jb-reco?q='+encodeURIComponent(JSON.stringify(state.answers)))
+        .then(r=>r.json())
+        .then(data=>{
+          body.innerHTML = data.items.map(p=>`
+            <div style="display:flex;gap:10px;margin:10px 0;align-items:center">
+              <img src="${p.image}" alt="${p.title}" style="width:64px;height:64px;object-fit:cover;border-radius:8px"/>
+              <div style="flex:1">
+                <div style="font-weight:600">${p.title}</div>
+                <div style="opacity:.75">${p.badge} • ${p.price}</div>
+                <div style="margin-top:6px;display:flex;gap:8px">
+                  <a href="${p.url}" class="jb-opt jb-chip">Voir</a>
+                  <a href="/cart/add?id=${p.variantId}&quantity=1" class="jb-opt">Ajouter au panier</a>
+                </div>
+              </div>
+            </div>
+          `).join('') || 'Aucun résultat — essayez un autre style.';
+        })
+        .catch(()=>{ body.innerHTML = "Oups, réessayez dans un instant."; });
+      actions.innerHTML = `<button class="jb-opt" onclick="(${()=>{state.step=0;state.answers={};renderStep();}})()">Recommencer</button>`;
+    }
+  }
+
+  bubble.onclick = ()=>{ panel.style.display = panel.style.display?'':'flex'; if(!panel.dataset.init){ panel.dataset.init='1'; renderStep(); } };
+})();
+</script>
